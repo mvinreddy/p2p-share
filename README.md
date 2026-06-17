@@ -6,7 +6,6 @@ The signaling server only brokers the initial handshake.
 **Live app:** https://p2p-share-rose.vercel.app/
 **Signaling server:** https://p2p-share-4fgx.onrender.com (health check: `/health`)
 
-> Replace the two URLs above with your actual Vercel and Render URLs once deployed.
 
 ## File Structure
 
