@@ -1,11 +1,44 @@
 # P2P Share — Direct Browser-to-Browser File Transfer
 
-Zero server storage. File bytes go directly peer-to-peer via WebRTC.
-The signaling server only brokers the initial handshake.
+A file-sharing web app where files move directly between two browsers
+over WebRTC. A lightweight signaling server only coordinates the initial
+connection handshake — it never receives, stores, or proxies file data.
 
-**Live app:** https://p2p-share-rose.vercel.app/
+**Live app:** https://p2p-share-rose.vercel.app
 **Signaling server:** https://p2p-share-4fgx.onrender.com (health check: `/health`)
 
+## How it works
+
+1. Sender drops a file → a unique room ID is generated.
+2. The signaling server relays a WebRTC offer/answer and ICE candidates
+   between sender and receiver to establish a direct connection.
+3. Once connected, the file is split into 16 KB chunks and streamed
+   directly over a WebRTC data channel — no server in the loop anymore.
+4. The receiver reassembles the chunks, verifies a SHA-256 hash against
+   the original, and auto-downloads the file.
+
+```
+Sender browser                  Signal server              Receiver browser
+     |── create-room ──────────────>|                            |
+     |<─ room-created ──────────────|                            |
+     |                              |<── join-room ──────────────|
+     |<─ receiver-ready ────────────|─── room-joined ───────────>|
+     |── webrtc-offer ─────────────>|── webrtc-offer ───────────>|
+     |<─ webrtc-answer ─────────────|<── webrtc-answer ──────────|
+     |── ice-candidate ────────────>|── ice-candidate ───────────>|
+     |<══════════ Direct P2P data channel (file chunks) ════════>|
+```
+
+## Features
+
+- Drag-and-drop file upload, max 50 MB
+- WebRTC data channel transfer, chunked at 16 KB
+- SHA-256 hash verification (sender computes it, receiver checks it on completion)
+- Real-time progress %, transfer speed, and connection status
+- Graceful handling of peer disconnects (no crash, UI notifies the other side)
+- Auto-download on the receiving end once verified
+- STUN (Google public servers) + TURN relay fallback for NAT traversal
+- CORS locked to the deployed frontend origin
 
 ## File Structure
 
@@ -21,115 +54,65 @@ p2p-share/
     │   │   ├── Sender.jsx       ← Drop file, generate link
     │   │   └── Receiver.jsx     ← Join room, download file
     │   ├── hooks/
-    │   │   └── useWebRTC.js     ← All WebRTC + chunking logic
+    │   │   └── useWebRTC.js     ← WebRTC connection + chunking logic
     │   └── utils/
     │       └── crypto.js        ← SHA-256 hash helper
+    ├── vercel.json               ← SPA rewrite (fixes 404 on direct room links)
     ├── .env.example
     └── package.json
 ```
 
 ## Local Development
 
-### 1. Start the signaling server
 ```bash
+# Terminal 1 — signaling server
 cd server
 npm install
-npm run dev          # runs on http://localhost:3001
-```
+npm run dev          # http://localhost:3001
 
-Note: visiting `http://localhost:3001` directly in a browser will show
-"Cannot GET /" — that's expected. This server has no UI; it only relays
-Socket.io messages. The only route it serves is `/health`.
-
-### 2. Start the React client
-```bash
+# Terminal 2 — frontend
 cd client
 npm install
 cp .env.example .env.local   # VITE_SERVER_URL=http://localhost:3001
-npm run dev          # runs on http://localhost:5173
+npm run dev          # http://localhost:5173
 ```
 
-### 3. Test it
-- Open http://localhost:5173 → drop a file → copy the room link
-- Open the room link in another tab or browser → file downloads automatically
+Open `http://localhost:5173`, drop a file, copy the room link, open it
+in a second tab. Visiting `http://localhost:3001` directly shows
+"Cannot GET /" — expected, since this server has no UI, only a `/health`
+route and Socket.io event handlers.
 
 ## Deployment
 
-This app is deployed as two separate services: a backend (signaling server)
-and a frontend (static React app). Below is the exact setup used for the
-live URLs above — use it as a template if you redeploy or fork this.
-
 ### Backend → Render
-
 | Setting | Value |
 |---|---|
 | Root Directory | `server` |
 | Build Command | `npm install` |
 | Start Command | `node index.js` |
-| Instance Type | Free |
-| Env var: `CLIENT_URL` | `https://your-app.vercel.app` |
-
-Deploy this first without `CLIENT_URL` set (it's fine — the server falls
-back to allowing all origins), grab the resulting `.onrender.com` URL,
-then come back and set `CLIENT_URL` once the frontend is deployed.
+| Env var: `CLIENT_URL` | your exact Vercel URL, **no trailing slash** |
 
 ### Frontend → Vercel
-
 | Setting | Value |
 |---|---|
 | Root Directory | `client` |
-| Framework Preset | Vite |
 | Build Command | `npm run build` |
 | Output Directory | `dist` |
-| Install Command | `npm install` |
-| Env var: `VITE_SERVER_URL` | `https://your-server.onrender.com` |
+| Env var: `VITE_SERVER_URL` | your exact Render URL |
+| Env vars (optional): `VITE_TURN_URL`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` | TURN credentials, e.g. from Metered.ca |
 
-### Deploy order
-1. Push code to GitHub.
-2. Deploy backend on Render → copy its URL.
-3. Deploy frontend on Vercel, setting `VITE_SERVER_URL` to the Render URL → copy its URL.
-4. Go back to Render → set `CLIENT_URL` to the Vercel URL → it auto-redeploys.
-5. Open the Vercel URL, drop a file, test the room link on a second device.
+Deploy order: push to GitHub → deploy backend, copy its URL → deploy
+frontend with that URL set → go back to Render and set `CLIENT_URL` to
+the frontend URL → redeploy backend.
 
-### A note on Render's free tier
-Free services spin down after inactivity. The first request after idle
-time can take 30–60 seconds to wake up — if a room seems stuck on
-"waiting" right after a period of no use, give it a minute before
-assuming something broke.
+Vite env vars are baked in at build time — changing one on Vercel
+requires triggering a redeploy, not just saving the setting.
 
-## How it works
+## Current Limitations
 
-```
-Sender browser                  Signal server              Receiver browser
-     |                               |                            |
-     |── create-room ──────────────>|                            |
-     |<─ room-created ──────────────|                            |
-     |                              |<── join-room ──────────────|
-     |<─ receiver-ready ────────────|─── room-joined ───────────>|
-     |── webrtc-offer ─────────────>|── webrtc-offer ───────────>|
-     |<─ webrtc-answer ─────────────|<── webrtc-answer ──────────|
-     |── ice-candidate ────────────>|── ice-candidate ───────────>|
-     |                              |                            |
-     |<══════════ Direct P2P data channel (file chunks) ════════>|
-```
-
-Once the P2P connection is established, the signal server is no longer
-involved. File chunks are sent in 16 KB pieces with SHA-256 hash
-verification on completion. The signaling server never sees file
-content — only room IDs and connection metadata (SDP offers/answers,
-ICE candidates).
-
-## Limitations (MVP)
-- Max 50 MB (browser RAM limit for FileReader)
-- 1-to-1 transfer only
-- No resume on disconnect
-- No TURN server configured — transfers may fail between peers on
-  restrictive/symmetric NAT networks (e.g. some corporate or mobile
-  carrier networks). Add a TURN server (Twilio, Metered.ca free tier)
-  to `ICE_SERVERS` in `useWebRTC.js` if this becomes an issue.
-
-## Brownie point extensions (not implemented)
-- Large file support via OPFS / Streams API
-- Zero-knowledge AES-GCM encryption via URL hash key
-- Multi-peer mesh swarming
-- Auto-resume on connection drop
+- 50 MB file size cap (entire file is read into browser memory)
+- One sender, one receiver per room — no multi-peer support
+- No transfer resume — a dropped connection restarts from 0%
+- File chunks are not application-level encrypted (WebRTC's own DTLS
+  transport encryption still applies, but there's no additional
+  end-to-end encryption layer)
